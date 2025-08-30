@@ -5,6 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
+import os
 
 # Page configuration
 st.set_page_config(
@@ -14,9 +15,41 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize session state for data persistence
+# File path for persistent storage
+DATA_FILE = "ngc_assignments_data.json"
+
+def load_data():
+    """Load assignments from file"""
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get('assignments', []), data.get('assignment_counter', 1)
+        except Exception as e:
+            st.error(f"Error loading data: {str(e)}")
+            return [], 1
+    return [], 1
+
+def save_data():
+    """Save assignments to file"""
+    try:
+        data = {
+            'assignments': st.session_state.assignments,
+            'assignment_counter': st.session_state.assignment_counter,
+            'last_updated': datetime.now().isoformat()
+        }
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        st.error(f"Error saving data: {str(e)}")
+        return False
+
+# Initialize session state with persistent data
 if 'assignments' not in st.session_state:
-    st.session_state.assignments = []
+    assignments, counter = load_data()
+    st.session_state.assignments = assignments
+    st.session_state.assignment_counter = counter
 
 if 'assignment_counter' not in st.session_state:
     st.session_state.assignment_counter = 1
@@ -75,6 +108,16 @@ st.markdown("""
     .priority-medium { background-color: #fff3cd; }
     .priority-high { background-color: #f8d7da; }
     .priority-critical { background-color: #721c24; color: white; }
+    .save-indicator {
+        position: fixed;
+        top: 70px;
+        right: 20px;
+        background-color: #28a745;
+        color: white;
+        padding: 0.5rem 1rem;
+        border-radius: 5px;
+        z-index: 1000;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -85,6 +128,15 @@ st.markdown("""
     <p>General Manager (D&E) - Task Management System</p>
 </div>
 """, unsafe_allow_html=True)
+
+# Show data status
+if st.session_state.assignments:
+    st.sidebar.success(f"✅ {len(st.session_state.assignments)} assignments loaded")
+    if os.path.exists(DATA_FILE):
+        file_time = datetime.fromtimestamp(os.path.getmtime(DATA_FILE))
+        st.sidebar.info(f"Last saved: {file_time.strftime('%Y-%m-%d %H:%M')}")
+else:
+    st.sidebar.info("No assignments found. Create your first assignment!")
 
 # Sidebar
 st.sidebar.header("📊 Navigation")
@@ -148,7 +200,12 @@ def create_assignment():
                 
                 st.session_state.assignments.append(new_assignment)
                 st.session_state.assignment_counter += 1
-                st.success(f"✅ Assignment '{title}' created successfully!")
+                
+                # Save to file
+                if save_data():
+                    st.success(f"✅ Assignment '{title}' created and saved successfully!")
+                else:
+                    st.warning("Assignment created but failed to save to file.")
                 st.rerun()
             else:
                 st.error("❌ Please fill in all required fields marked with *")
@@ -322,8 +379,21 @@ def manage_assignments():
                                 })
                             break
                     
-                    st.success("Assignment updated successfully!")
+                    # Save to file
+                    if save_data():
+                        st.success("✅ Assignment updated and saved successfully!")
+                    else:
+                        st.warning("Assignment updated but failed to save to file.")
                     st.rerun()
+            
+            # Delete assignment button
+            if st.button(f"🗑️ Delete Assignment {assignment['id']}", key=f"delete_{assignment['id']}"):
+                st.session_state.assignments = [a for a in st.session_state.assignments if a['id'] != assignment['id']]
+                if save_data():
+                    st.success("Assignment deleted successfully!")
+                else:
+                    st.warning("Assignment deleted but failed to save changes.")
+                st.rerun()
 
 def reports_analytics():
     st.header("📈 Reports & Analytics")
@@ -445,31 +515,52 @@ def engineer_workload():
 st.sidebar.markdown("---")
 st.sidebar.subheader("💾 Data Management")
 
-if st.sidebar.button("📥 Export Data"):
+# Auto-save indicator
+if st.session_state.assignments and os.path.exists(DATA_FILE):
+    st.sidebar.success("🔄 Auto-save enabled")
+
+# Manual backup
+if st.sidebar.button("📥 Create Backup"):
     if st.session_state.assignments:
-        export_data = {
+        backup_data = {
             'assignments': st.session_state.assignments,
+            'assignment_counter': st.session_state.assignment_counter,
             'export_date': datetime.now().isoformat()
         }
         st.sidebar.download_button(
-            label="⬇️ Download JSON",
-            data=json.dumps(export_data, indent=2),
-            file_name=f"ngc_assignments_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+            label="⬇️ Download Backup",
+            data=json.dumps(backup_data, indent=2),
+            file_name=f"ngc_assignments_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
             mime="application/json"
         )
     else:
-        st.sidebar.warning("No data to export")
+        st.sidebar.warning("No data to backup")
 
-uploaded_file = st.sidebar.file_uploader("📤 Import Data", type="json")
+# Restore from backup
+uploaded_file = st.sidebar.file_uploader("📤 Restore from Backup", type="json")
 if uploaded_file is not None:
     try:
         import_data = json.load(uploaded_file)
         st.session_state.assignments = import_data['assignments']
-        st.session_state.assignment_counter = max([a['id'] for a in st.session_state.assignments]) + 1 if st.session_state.assignments else 1
-        st.sidebar.success("Data imported successfully!")
+        st.session_state.assignment_counter = import_data.get('assignment_counter', max([a['id'] for a in st.session_state.assignments]) + 1 if st.session_state.assignments else 1)
+        
+        # Save restored data
+        if save_data():
+            st.sidebar.success("✅ Data restored and saved successfully!")
+        else:
+            st.sidebar.error("Data restored but failed to save permanently")
         st.rerun()
     except Exception as e:
-        st.sidebar.error(f"Import failed: {str(e)}")
+        st.sidebar.error(f"Restore failed: {str(e)}")
+
+# Clear all data (with confirmation)
+if st.sidebar.button("🗑️ Clear All Data", help="This will delete all assignments permanently"):
+    if st.sidebar.checkbox("I understand this will delete all data"):
+        st.session_state.assignments = []
+        st.session_state.assignment_counter = 1
+        if save_data():
+            st.sidebar.success("All data cleared successfully")
+        st.rerun()
 
 # Route to different pages
 if page == "Dashboard":
@@ -486,3 +577,8 @@ elif page == "Engineer Workload":
 # Footer
 st.markdown("---")
 st.markdown("**NGC Assignment Tracker** | General Manager (D&E) | Developed for efficient task management")
+
+# Auto-save status
+if st.session_state.assignments:
+    total_assignments = len(st.session_state.assignments)
+    st.markdown(f"*💾 {total_assignments} assignments saved automatically*")
